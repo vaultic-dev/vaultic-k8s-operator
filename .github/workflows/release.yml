@@ -1,0 +1,184 @@
+name: Release
+
+# Two ways to cut a release:
+#   1. Automatic: merging a pull request into main that carries the `release` label gets a
+#      patch-bumped tag (vX.Y.Z -> vX.Y.(Z+1), starting at v0.1.0) created and released
+#      automatically. A PR merged *without* that label doesn't release anything.
+#   2. Manual override: push a `vX.Y.Z` tag yourself (e.g. for a deliberate minor/major bump,
+#      or a prerelease like v1.0.0-rc.1) and this workflow builds and publishes that exact tag
+#      instead of computing one.
+#
+# These are two triggers on the *same* workflow, not two workflows chained together: a tag
+# pushed with GITHUB_TOKEN (as the `tag` job below does) does not itself trigger another
+# workflow run — GitHub blocks that specifically to prevent infinite loops — so the auto-tag
+# and the build/publish have to happen in one run rather than the first triggering the second.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  IMAGE_NAME: ghcr.io/vaultic-dev/vaultic-k8s-operator
+  # For a merged-PR run, build from the actual merge commit that landed on main (not the PR's
+  # head branch tip) — same commit `push: branches: [main]` would have seen. For a manual tag
+  # push, just the commit the tag points at.
+  RELEASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
+
+jobs:
+  # Same checks as ci.yml, re-run here (not depended on cross-workflow) so this pipeline never
+  # tags or publishes on top of a build that doesn't compile or a failing test. Skipped entirely
+  # for a PR closed without merging, or merged without the `release` label.
+  test:
+    if: |
+      github.event_name == 'push' ||
+      (github.event.pull_request.merged == true &&
+       contains(github.event.pull_request.labels.*.name, 'release'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+      - name: gofmt
+        run: |
+          diff="$(gofmt -l .)"
+          if [ -n "$diff" ]; then
+            echo "The following files are not gofmt'd:"
+            echo "$diff"
+            exit 1
+          fi
+      - run: go vet ./...
+      - run: go build ./...
+      - run: go test -race -v ./...
+
+  # Only runs for the merged+labeled-PR trigger; a direct tag push skips this job entirely and
+  # build-and-push below uses the pushed tag as-is.
+  tag:
+    needs: [test]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0 # need full tag history to find the latest vX.Y.Z
+
+      - name: Compute next patch version
+        id: next
+        run: |
+          git fetch --tags --quiet
+          last="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)"
+          if [ -z "$last" ]; then
+            next="v0.1.0"
+          else
+            IFS='.' read -r major minor patch <<< "${last#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "Last release: ${last:-<none>} -> next: $next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.next.outputs.version }}" "${{ env.RELEASE_SHA }}"
+          git push origin "${{ steps.next.outputs.version }}"
+
+  build-and-push:
+    needs: [test, tag]
+    # Runs whenever test passed and tag didn't fail — covers both trigger shapes: `tag` is
+    # skipped (not failed) on a direct tag push, and succeeded on a merged, release-labeled PR.
+    if: |
+      always() &&
+      needs.test.result == 'success' &&
+      needs.tag.result != 'failure' &&
+      needs.tag.result != 'cancelled'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to create the GitHub Release
+      packages: write # to push the image to GHCR
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+
+      - name: Determine version being released
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "value=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ needs.tag.outputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # No stored credentials: GITHUB_TOKEN is minted per-run by Actions and scoped by the
+      # `permissions:` block above (packages: write, nothing else beyond contents: write).
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Whether this is a stable release (no prerelease/build-metadata suffix, e.g. v1.2.3) vs.
+      # a prerelease (v1.2.3-rc.1, only reachable via the manual tag-push path) — only stable
+      # releases also get the `latest` tag. Auto-tagged versions are always stable.
+      - name: Determine release channel
+        id: channel
+        run: |
+          if [[ "${{ steps.version.outputs.value }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_stable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Computes the image tags/labels for this build. type=raw with the version keeps the
+      # exact `vX.Y.Z` string (docker/metadata-action's `type=semver` would normalize it, e.g.
+      # strip the `v`); type=sha adds a second, independently-immutable reference tied to the
+      # exact commit regardless of whether the version tag itself is ever moved. Standard OCI
+      # labels (source, revision, created, description, licenses) are generated automatically.
+      - name: Compute image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.value }}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable=${{ steps.channel.outputs.is_stable == 'true' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.version.outputs.value }}" \
+            --repo "${{ github.repository }}" \
+            --target "${{ env.RELEASE_SHA }}" \
+            --title "${{ steps.version.outputs.value }}" \
+            --generate-notes

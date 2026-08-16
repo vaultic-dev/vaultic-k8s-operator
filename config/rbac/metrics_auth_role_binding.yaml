@@ -1,0 +1,16 @@
+# Grants the operator's ServiceAccount permission to create TokenReviews/SubjectAccessReviews,
+# which the manager's secure metrics endpoint (--metrics-secure, default true) uses to
+# authenticate and authorize scrapers via the Kubernetes API server instead of serving
+# metrics over plain, unauthenticated HTTP.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vaultic-operator-metrics-auth-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: vaultic-operator
+    namespace: vaultic-system

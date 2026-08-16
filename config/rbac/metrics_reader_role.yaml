@@ -1,0 +1,12 @@
+# Bind this to a Prometheus (or other scraper) ServiceAccount so it can read the operator's
+# secure metrics endpoint. Not bound to anything by default; wire up a ClusterRoleBinding
+# for your specific metrics scraper's ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vaultic-operator-metrics-reader
+rules:
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get

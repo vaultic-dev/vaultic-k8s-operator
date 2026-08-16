@@ -1,0 +1,89 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+  - apiGroups:
+      - coordination.k8s.io
+    resources:
+      - leases
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - ''
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+  - apiGroups:
+      - ''
+    resources:
+      - secrets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - vaultic.dev
+    resources:
+      - vaulticcertificates
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - vaultic.dev
+    resources:
+      - vaulticcertificates/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - vaultic.dev
+    resources:
+      - vaulticcertificates/status
+    verbs:
+      - get
+      - patch
+      - update
+  - apiGroups:
+      - vaultic.dev
+    resources:
+      - vaulticsecrets
+    verbs:
+      - create
+      - delete
+      - get
+      - list
+      - patch
+      - update
+      - watch
+  - apiGroups:
+      - vaultic.dev
+    resources:
+      - vaulticsecrets/finalizers
+    verbs:
+      - update
+  - apiGroups:
+      - vaultic.dev
+    resources:
+      - vaulticsecrets/status
+    verbs:
+      - get
+      - patch
+      - update

@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vaultic-token
+  namespace: default
+type: Opaque
+stringData:
+  token: 'REPLACE_WITH_A_REAL_VAULTIC_SERVICE_TOKEN'
+---
+apiVersion: vaultic.dev/v1
+kind: VaulticCertificate
+metadata:
+  name: backend-api-tls
+  namespace: default
+spec:
+  serverURL: http://vaultic-server.default.svc.cluster.local:4000
+  workspace: acme
+  application: backend-api
+  commonName: api.internal
+  tokenSecretRef:
+    name: vaultic-token
+    key: token
+  targetSecretName: backend-api-tls
+  refreshIntervalSeconds: 60

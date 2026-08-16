@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vaultic-operator
+  namespace: vaultic-system
+  labels:
+    app.kubernetes.io/name: vaultic-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vaultic-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vaultic-operator
+    spec:
+      serviceAccountName: vaultic-operator
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          # Production default: a released, immutable GHCR image (published by
+          # .github/workflows/release.yml on every `vX.Y.Z` tag push) — bump this to the version
+          # you want to run. For local development, don't edit this line directly; instead build
+          # `vaultic/k8s-operator:dev` locally (`make docker-build`), load it into your cluster
+          # (kind load docker-image / minikube image load), and deploy with
+          # `make deploy` (defaults IMG to that local :dev tag — see Makefile/README).
+          image: ghcr.io/vaultic-dev/vaultic-k8s-operator:v0.1.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --health-probe-bind-address=:8081
+            - --metrics-bind-address=:8080
+          ports:
+            - containerPort: 8080
+              name: metrics
+            - containerPort: 8081
+              name: probes
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
